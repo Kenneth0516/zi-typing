@@ -1,0 +1,33 @@
+// @vitest-environment jsdom
+import 'fake-indexeddb/auto';
+import {act,useState} from 'react';
+import {createRoot,type Root} from 'react-dom/client';
+import {describe,it,expect,beforeEach,afterEach,vi} from 'vitest';
+import {Editor} from './Editor';
+import {usePractice} from '../hooks/usePractice';
+import {defaults,type Session} from '../core/types';
+import {repository} from '../storage/repository';
+import {prompts} from '../data/prompts';
+let host:HTMLDivElement,root:Root;
+const flush=()=>new Promise<void>(resolve=>setTimeout(resolve,25));
+beforeEach(async()=>{Object.assign(globalThis,{IS_REACT_ACT_ENVIRONMENT:true});Object.defineProperty(Element.prototype,'scrollIntoView',{configurable:true,value:vi.fn()});Object.defineProperty(window,'matchMedia',{writable:true,value:()=>({matches:false,addEventListener(){},removeEventListener(){}})});host=document.createElement('div');document.body.append(host);root=createRoot(host);await repository.set('draft',null);});
+afterEach(async()=>{await act(async()=>root.unmount());vi.useRealTimers();await flush();host.remove();vi.restoreAllMocks();});
+describe('原生輸入區整合',()=>{
+ it('組字期間不提交或重寫原生 value，結束後只提交一次',async()=>{
+  const commit=vi.fn();await act(async()=>root.render(<Editor target="香港" value="" punctuation={false} disabled={false} lookup={false} fontSize={30} initialSelection={[0,0]} onCommit={commit} onLookup={()=>{}} onSelection={()=>{}} onComposition={()=>{}}/>));
+  const el=host.querySelector('textarea')!;
+  await act(async()=>{el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));el.value='h';el.dispatchEvent(new InputEvent('input',{bubbles:true,isComposing:true,inputType:'insertCompositionText'}));});expect(commit).not.toHaveBeenCalled();expect(el.value).toBe('h');
+  await act(async()=>{el.value='香港';el.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'香港'}));el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText'}));await flush();});expect(commit).toHaveBeenCalledTimes(1);expect(commit.mock.calls[0][0]).toBe('香港');
+ });
+ it('查碼返回編輯會保留內容、選取位置及焦點',async()=>{let toggle:(b:boolean)=>void=()=>{};function Harness(){const [lookup,setLookup]=useState(false);toggle=setLookup;return <Editor target="今天我要去學校" value="今天我去學校" punctuation={false} disabled={false} lookup={lookup} fontSize={30} initialSelection={[3,3]} onCommit={()=>{}} onLookup={()=>{}} onSelection={()=>{}} onComposition={()=>{}}/>;}await act(async()=>root.render(<Harness/>));const el=host.querySelector('textarea')!;el.setSelectionRange(3,3);await act(async()=>toggle(true));await act(async()=>toggle(false));expect(el.value).toBe('今天我去學校');expect(el.selectionStart).toBe(3);expect(document.activeElement).toBe(el);});
+ it('貼上被攔截，唔會增加輸入',async()=>{const blocked=vi.fn();await act(async()=>root.render(<Editor target="香港" value="" punctuation={false} disabled={false} lookup={false} fontSize={30} initialSelection={[0,0]} onCommit={()=>{}} onLookup={()=>{}} onSelection={()=>{}} onComposition={()=>{}} onBlocked={blocked}/>));const el=host.querySelector('textarea')!;const paste=new Event('paste',{bubbles:true,cancelable:true});el.dispatchEvent(paste);expect(paste.defaultPrevented).toBe(true);expect(blocked).toHaveBeenCalledTimes(1);expect(el.value).toBe('');});
+});
+describe('練習流程整合',()=>{
+ it('引擎層亦會拒絕少於八成的正常完成',async()=>{let p:ReturnType<typeof usePractice>;function Harness(){p=usePractice(defaults,()=>{},()=>{});return null;}await act(async()=>{root.render(<Harness/>);await flush();});await act(flush);await act(async()=>p!.commit('一','insertText'));await act(async()=>p!.advance('complete'));expect(p!.session?.attempts).toHaveLength(0);});
+ it('限時模式由首次確認開始，查碼不停計時，到時結算部分文字',async()=>{vi.useFakeTimers({toFake:['setInterval','clearInterval','performance']});let p:ReturnType<typeof usePractice>;function Harness(){p=usePractice({...defaults,mode:'timed',duration:30},()=>{},()=>{});return null;}await act(async()=>{root.render(<Harness/>);await flush();});await act(flush);await act(async()=>{await vi.advanceTimersByTimeAsync(10000);});expect(p!.elapsed).toBe(0);const prompt=prompts.find(q=>q.id===p!.session!.currentId)!;await act(async()=>p!.commit(prompt.text.slice(0,3),'insertCompositionText'));await act(async()=>p!.lookup(prompt.text[0]));expect(p!.paused).toBe(false);await act(async()=>{await vi.advanceTimersByTimeAsync(30100);});expect(p!.result?.elapsedMs).toBe(30000);expect(p!.result?.attempts.at(-1)?.status).toBe('partial');});
+ it('第一個確認字才計時；完全正確自動換句；跳過不計完成',async()=>{let practice:ReturnType<typeof usePractice>;function Harness(){practice=usePractice(defaults,()=>{},()=>{});return null;}await act(async()=>{root.render(<Harness/>);await flush();});await act(flush);expect(practice!.session).not.toBeNull();expect(practice!.elapsed).toBe(0);const prompt=prompts.find(p=>p.id===practice!.session!.currentId)!;
+ await act(async()=>practice!.commit(prompt.text,'insertCompositionText'));expect(practice!.session!.attempts[0].status).toBe('complete');expect(practice!.session!.currentId).not.toBe(prompt.id);expect(practice!.session!.value).toBe('');await act(async()=>practice!.advance('skipped'));expect(practice!.session!.attempts.filter(a=>a.status==='complete')).toHaveLength(1);expect(practice!.session!.attempts.filter(a=>a.status==='skipped')).toHaveLength(1);
+ });
+ it('查碼暫停及手動暫停獨立，返回查碼不會意外解除手動暫停',async()=>{let p:ReturnType<typeof usePractice>;function Harness(){p=usePractice(defaults,()=>{},()=>{});return null;}await act(async()=>{root.render(<Harness/>);await flush();});await act(flush);await act(async()=>p!.commit('今','insertText'));await act(async()=>p!.pause('manual'));await act(async()=>p!.lookup('今'));await act(async()=>p!.resume('lookup'));expect(p!.paused).toBe(true);await act(async()=>p!.resume('manual'));expect(p!.paused).toBe(false);});
+ it('啟動先讀草稿，不會被空白新練習覆蓋',async()=>{const draft:Session={id:'restore-test',startedAt:new Date().toISOString(),settings:defaults,device:'desktop',elapsedMs:12345,currentId:prompts[0].id,value:'在忙',selection:[2,2],seen:[prompts[0].id],attempts:[],events:[{at:1,promptId:prompts[0].id,before:'',after:'在忙',inputType:'insertText',inserted:2,firstCorrect:2,removed:0,errors:[],assisted:false}],lookups:[],assisted:false};await repository.set('draft',draft);let p:ReturnType<typeof usePractice>;function Harness(){p=usePractice(defaults,()=>{},()=>{});return null;}await act(async()=>{root.render(<Harness/>);await flush();});await act(flush);expect(p!.draft?.id).toBe(draft.id);expect((await repository.get<Session>('draft'))?.value).toBe('在忙');await act(async()=>p!.restore());expect(p!.session?.value).toBe('在忙');expect(p!.elapsed).toBe(12345);expect(p!.paused).toBe(true);});
+});

@@ -1,0 +1,13 @@
+{
+  "name": "Rime 倉頡五代",
+  "version": "1.0",
+  "revision": "fcb3d7dd94ac1304663d575727d24d8107f6b082",
+  "characters": 75151,
+  "license": "GPL (字表標示；完整專案以 GPL-3.0-or-later 發佈)",
+  "source": "https://github.com/rime/rime-cangjie/tree/fcb3d7dd94ac1304663d575727d24d8107f6b082",
+  "files": [
+    "cangjie5.base.dict.yaml",
+    "cangjie5.extended.dict.yaml"
+  ],
+  "sha256": "5dcfea728357b67686f4e1b51d5e4dcc961d9b117b01bb0d75a6342b440fc599"
+}
